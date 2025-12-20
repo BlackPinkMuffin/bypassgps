@@ -1,7 +1,54 @@
 #!/bin/bash
 
 # ============================================
-#   КРАСИВАЯ АНИМАЦИЯ (СПИННЕР)
+#   ЦВЕТА
+# ============================================
+
+GREEN="\033[92m"
+RED="\033[91m"
+YELLOW="\033[93m"
+BLUE="\033[94m"
+CYAN="\033[96m"
+GRAY="\033[90m"
+RESET="\033[0m"
+
+# ============================================
+#   ЛОГИ ДЛЯ ИТОГОВОЙ ТАБЛИЦЫ
+# ============================================
+
+declare -A RESULTS
+
+log_result() {
+    local key="$1"
+    local value="$2"
+    RESULTS["$key"]="$value"
+}
+
+print_results_table() {
+    if [ ${#RESULTS[@]} -eq 0 ]; then
+        return
+    fi
+
+    echo -e "\n${YELLOW}=== Итоги установки ===${RESET}"
+    printf '┌%-30s┬%-20s┐\n' \
+        "$(printf '──────────────────────────────')" \
+        "$(printf '────────────────────')"
+    printf '│ %-28s │ %-18s │\n' "Действие" "Результат"
+    printf '├%-30s┼%-20s┤\n' \
+        "$(printf '──────────────────────────────')" \
+        "$(printf '────────────────────')"
+
+    for key in "${!RESULTS[@]}"; do
+        printf '│ %-28s │ %-18s │\n' "$key" "${RESULTS[$key]}"
+    done
+
+    printf '└%-30s┴%-20s┘\n' \
+        "$(printf '──────────────────────────────')" \
+        "$(printf '────────────────────')"
+}
+
+# ============================================
+#   СПИННЕР (АНИМАЦИЯ)
 # ============================================
 
 spinner() {
@@ -12,26 +59,53 @@ spinner() {
 
     while kill -0 "$pid" 2>/dev/null; do
         for i in $(seq 0 9); do
-            printf "\r\033[96m${spin:$i:1} $msg...\033[0m"
-            sleep $delay
+            printf "\r${CYAN}${spin:$i:1} %s...${RESET}" "$msg"
+            sleep "$delay"
         done
     done
 
-    printf "\r\033[92m✔ $msg завершено\033[0m\n"
+    printf "\r${GREEN}✔ %s завершено${RESET}\n" "$msg"
 }
 
 # ============================================
-#   ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ
+#   ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ RUN
 # ============================================
 
 run() {
-    echo -e "\n\033[94m[RUN]\033[0m $1"
-    echo -e "\033[90m→ $2\033[0m"
+    local title="$1"
+    local cmd="$2"
 
-    bash -c "$2" &
+    echo -e "\n${BLUE}[RUN]${RESET} $title"
+    echo -e "${GRAY}→ $cmd${RESET}"
+
+    bash -c "$cmd" &
     local pid=$!
-    spinner "$1" "$pid"
+    spinner "$title" "$pid"
     wait "$pid"
+    local status=$?
+
+    if [ $status -eq 0 ]; then
+        log_result "$title" "Успешно"
+    else
+        log_result "$title" "Ошибка ($status)"
+        echo -e "${RED}Команда завершилась с ошибкой. Остановка.${RESET}"
+        print_results_table
+        exit 1
+    fi
+}
+
+# ============================================
+#   ПОИСК i2cdetect
+# ============================================
+
+find_i2cdetect() {
+    if command -v i2cdetect >/dev/null 2>&1; then
+        echo "i2cdetect"
+    elif [ -x /usr/sbin/i2cdetect ]; then
+        echo "/usr/sbin/i2cdetect"
+    else
+        echo ""
+    fi
 }
 
 # ============================================
@@ -39,35 +113,74 @@ run() {
 # ============================================
 
 check_hardware() {
-    echo -e "\n\033[93m=== Проверка оборудования ===\033[0m"
+    echo -e "\n${YELLOW}=== Проверка оборудования ===${RESET}"
 
-    echo -n "I2C... "
-    if /usr/sbin/i2cdetect -y 1 >/dev/null 2>&1; then
-        echo -e "\033[92mOK\033[0m"
-    else
-        echo -e "\033[91mНЕ НАЙДЕН\033[0m"
+    local I2CDETECT_CMD
+    I2CDETECT_CMD=$(find_i2cdetect)
+
+    # ---- I2C и компас ----
+    local I2C_BUSES=()
+    if [ -n "$I2CDETECT_CMD" ]; then
+        I2C_BUSES=($(ls /dev/i2c-* 2>/dev/null | sed 's/[^0-9]//g'))
     fi
 
-    echo -n "Bluetooth служба... "
-    if systemctl is-active bluetooth >/dev/null; then
-        echo -e "\033[92mOK\033[0m"
+    local buses_str="нет"
+    local compass_status="НЕ ОБНАРУЖЕН"
+    local compass_bus="-"
+
+    if [ ${#I2C_BUSES[@]} -eq 0 ] || [ -z "$I2CDETECT_CMD" ]; then
+        echo -e "I2C шины... ${RED}НЕ НАЙДЕНЫ${RESET}"
     else
-        echo -e "\033[91mНЕ АКТИВНА\033[0m"
+        buses_str=$(printf '%s ' "${I2C_BUSES[@]}")
+        echo -e "I2C шины... ${GREEN}${buses_str}${RESET}"
+
+        # ищем компас (адрес 0x1E) по всем шинам
+        for bus in "${I2C_BUSES[@]}"; do
+            if $I2CDETECT_CMD -y "$bus" 2>/dev/null | grep -q "1e"; then
+                compass_status="Найден"
+                compass_bus="$bus"
+                break
+            fi
+        done
     fi
 
-    echo -n "OBD адаптер... "
-    if rfcomm -a 2>/dev/null | grep -q rfcomm0; then
-        echo -e "\033[92mOK\033[0m"
-    else
-        echo -e "\033[91mНЕ ПОДКЛЮЧЕН\033[0m"
+    # ---- Bluetooth ----
+    local bt_status="НЕ АКТИВЕН"
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active bluetooth >/dev/null 2>&1; then
+        bt_status="OK (systemd)"
+    elif command -v bluetoothctl >/dev/null 2>&1 && bluetoothctl show >/dev/null 2>&1; then
+        bt_status="OK (bluetoothctl)"
+    elif [ -d /sys/class/bluetooth ]; then
+        bt_status="НАЙДЕН (sysfs)"
     fi
 
-    echo -n "Компас (I2C адрес 0x1E)... "
-    if /usr/sbin/i2cdetect -y 1 | grep -q "1e"; then
-        echo -e "\033[92mOK\033[0m"
-    else
-        echo -e "\033[91mНЕ ОБНАРУЖЕН\033[0m"
-    fi
+    # ---- OBD ----
+    local obd_status="НЕ ПОДКЛЮЧЕН"
+    local obd_candidates=(/dev/rfcomm* /dev/ttyUSB* /dev/ttyAMA* /dev/ttyS*)
+    for dev in "${obd_candidates[@]}"; do
+        if [ -e "$dev" ]; then
+            obd_status="НАЙДЕН ($dev)"
+            break
+        fi
+    done
+
+    # ---- Таблица статусов ----
+    printf '\n┌%-23s┬%-26s┐\n' \
+        "$(printf '───────────────────────')" \
+        "$(printf '──────────────────────────')"
+    printf '│ %-21s │ %-24s │\n' "Компонент" "Статус"
+    printf '├%-23s┼%-26s┤\n' \
+        "$(printf '───────────────────────')" \
+        "$(printf '──────────────────────────')"
+
+    printf '│ %-21s │ %-24s │\n' "I2C шины" "$buses_str"
+    printf '│ %-21s │ %-24s │\n' "Компас 0x1E" "$compass_status (bus $compass_bus)"
+    printf '│ %-21s │ %-24s │\n' "Bluetooth" "$bt_status"
+    printf '│ %-21s │ %-24s │\n' "OBD адаптер" "$obd_status"
+
+    printf '└%-23s┴%-26s┘\n\n' \
+        "$(printf '───────────────────────')" \
+        "$(printf '──────────────────────────')"
 }
 
 # ============================================
@@ -97,13 +210,13 @@ install_python() {
 # ============================================
 
 clear
-echo -e "\033[96m=== BypassGPS Installer ===\033[0m"
+echo -e "${CYAN}=== BypassGPS Installer ===${RESET}"
 echo "1) Установка"
 echo "2) Проверка оборудования"
 echo -n "Выберите режим: "
 read mode
 
-case $mode in
+case "$mode" in
     1)
         install_system
         install_python
@@ -113,18 +226,20 @@ case $mode in
         check_hardware
         ;;
     *)
-        echo "Неверный выбор"
+        echo -e "${RED}Неверный выбор${RESET}"
         ;;
 esac
+
+print_results_table
 
 # ============================================
 #   КНОПКА ВЫХОДА
 # ============================================
 
-echo -e "\n\033[92mГотово! Установка завершена.\033[0m"
-echo -e "\033[96mНажмите Enter, чтобы вернуться в bypassgps...\033[0m"
+echo -e "\n${GREEN}Готово! Скрипт завершил работу.${RESET}"
+echo -e "${CYAN}Нажмите Enter, чтобы вернуться в bypassgps...${RESET}"
 read
 
-cd ~/bypassgps 2>/dev/null
+cd ~/bypassgps 2>/dev/null || true
 clear
-echo -e "\033[92mВы вернулись в bypassgps.\033[0m"
+echo -e "${GREEN}Вы вернулись в bypassgps.${RESET}"
