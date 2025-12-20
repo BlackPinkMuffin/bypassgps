@@ -42,7 +42,7 @@ check_hardware() {
     echo -e "\n\033[93m=== Проверка оборудования ===\033[0m"
 
     echo -n "I2C... "
-    if i2cdetect -y 1 >/dev/null 2>&1; then
+    if /usr/sbin/i2cdetect -y 1 >/dev/null 2>&1; then
         echo -e "\033[92mOK\033[0m"
     else
         echo -e "\033[91mНЕ НАЙДЕН\033[0m"
@@ -63,7 +63,7 @@ check_hardware() {
     fi
 
     echo -n "Компас (I2C адрес 0x1E)... "
-    if i2cdetect -y 1 | grep -q "1e"; then
+    if /usr/sbin/i2cdetect -y 1 | grep -q "1e"; then
         echo -e "\033[92mOK\033[0m"
     else
         echo -e "\033[91mНЕ ОБНАРУЖЕН\033[0m"
@@ -86,10 +86,10 @@ install_system() {
 
 install_python() {
     run "Установка python-OBD" \
-        "pip install git+https://github.com/brendan-w/python-OBD.git"
+        "pip install --break-system-packages git+https://github.com/brendan-w/python-OBD.git"
 
     run "Установка Python зависимостей" \
-        "pip install pynmea2 smbus2 rich"
+        "pip install --break-system-packages pynmea2 smbus2 rich"
 }
 
 # ============================================
@@ -98,10 +98,8 @@ install_python() {
 
 clear
 echo -e "\033[96m=== BypassGPS Installer ===\033[0m"
-echo "1) Полная установка + проверка оборудования"
-echo "2) Установка без проверки оборудования"
-echo "3) Обновление зависимостей"
-echo "4) Проверка оборудования"
+echo "1) Установка"
+echo "2) Проверка оборудования"
 echo -n "Выберите режим: "
 read mode
 
@@ -112,13 +110,6 @@ case $mode in
         check_hardware
         ;;
     2)
-        install_system
-        install_python
-        ;;
-    3)
-        install_python
-        ;;
-    4)
         check_hardware
         ;;
     *)
