@@ -34,6 +34,5 @@ setup(
         "pynmea2>=1.18.0",
         "smbus2>=0.4.3",
         "rich>=13.0.0",
-        "pybluez>=0.23"
     ],
 )
