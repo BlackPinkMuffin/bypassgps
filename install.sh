@@ -30,21 +30,12 @@ print_results_table() {
     fi
 
     echo -e "\n${YELLOW}=== Итоги установки ===${RESET}"
-    printf '┌%-30s┬%-20s┐\n' \
-        "$(printf '──────────────────────────────')" \
-        "$(printf '────────────────────')"
-    printf '│ %-28s │ %-18s │\n' "Действие" "Результат"
-    printf '├%-30s┼%-20s┤\n' \
-        "$(printf '──────────────────────────────')" \
-        "$(printf '────────────────────')"
+    printf "%-30s %s\n" "Действие" "Результат"
+    printf "%-30s %s\n" "------------------------------" "--------------------"
 
     for key in "${!RESULTS[@]}"; do
-        printf '│ %-28s │ %-18s │\n' "$key" "${RESULTS[$key]}"
+        printf "%-30s %s\n" "$key" "${RESULTS[$key]}"
     done
-
-    printf '└%-30s┴%-20s┘\n' \
-        "$(printf '──────────────────────────────')" \
-        "$(printf '────────────────────')"
 }
 
 # ============================================
@@ -128,13 +119,9 @@ check_hardware() {
     local compass_status="НЕ ОБНАРУЖЕН"
     local compass_bus="-"
 
-    if [ ${#I2C_BUSES[@]} -eq 0 ] || [ -z "$I2CDETECT_CMD" ]; then
-        echo -e "I2C шины... ${RED}НЕ НАЙДЕНЫ${RESET}"
-    else
+    if [ ${#I2C_BUSES[@]} -gt 0 ]; then
         buses_str=$(printf '%s ' "${I2C_BUSES[@]}")
-        echo -e "I2C шины... ${GREEN}${buses_str}${RESET}"
 
-        # ищем компас (адрес 0x1E) по всем шинам
         for bus in "${I2C_BUSES[@]}"; do
             if $I2CDETECT_CMD -y "$bus" 2>/dev/null | grep -q "1e"; then
                 compass_status="Найден"
@@ -146,7 +133,7 @@ check_hardware() {
 
     # ---- Bluetooth ----
     local bt_status="НЕ АКТИВЕН"
-    if command -v systemctl >/dev/null 2>&1 && systemctl is-active bluetooth >/dev/null 2>&1; then
+    if systemctl is-active bluetooth >/dev/null 2>&1; then
         bt_status="OK (systemd)"
     elif command -v bluetoothctl >/dev/null 2>&1 && bluetoothctl show >/dev/null 2>&1; then
         bt_status="OK (bluetoothctl)"
@@ -156,31 +143,22 @@ check_hardware() {
 
     # ---- OBD ----
     local obd_status="НЕ ПОДКЛЮЧЕН"
-    local obd_candidates=(/dev/rfcomm* /dev/ttyUSB* /dev/ttyAMA* /dev/ttyS*)
-    for dev in "${obd_candidates[@]}"; do
+    for dev in /dev/rfcomm* /dev/ttyUSB* /dev/ttyAMA* /dev/ttyS*; do
         if [ -e "$dev" ]; then
             obd_status="НАЙДЕН ($dev)"
             break
         fi
     done
 
-    # ---- Таблица статусов ----
-    printf '\n┌%-23s┬%-26s┐\n' \
-        "$(printf '───────────────────────')" \
-        "$(printf '──────────────────────────')"
-    printf '│ %-21s │ %-24s │\n' "Компонент" "Статус"
-    printf '├%-23s┼%-26s┤\n' \
-        "$(printf '───────────────────────')" \
-        "$(printf '──────────────────────────')"
-
-    printf '│ %-21s │ %-24s │\n' "I2C шины" "$buses_str"
-    printf '│ %-21s │ %-24s │\n' "Компас 0x1E" "$compass_status (bus $compass_bus)"
-    printf '│ %-21s │ %-24s │\n' "Bluetooth" "$bt_status"
-    printf '│ %-21s │ %-24s │\n' "OBD адаптер" "$obd_status"
-
-    printf '└%-23s┴%-26s┘\n\n' \
-        "$(printf '───────────────────────')" \
-        "$(printf '──────────────────────────')"
+    # ---- Чистая таблица ----
+    echo
+    printf "%-20s %s\n" "Компонент" "Статус"
+    printf "%-20s %s\n" "--------------------" "-------------------------"
+    printf "%-20s %s\n" "I2C шины" "$buses_str"
+    printf "%-20s %s\n" "Компас 0x1E" "$compass_status (bus $compass_bus)"
+    printf "%-20s %s\n" "Bluetooth" "$bt_status"
+    printf "%-20s %s\n" "OBD адаптер" "$obd_status"
+    echo
 }
 
 # ============================================
