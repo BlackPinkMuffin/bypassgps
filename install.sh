@@ -5,16 +5,19 @@
 # ============================================
 
 spinner() {
-    local pid=$!
+    local msg="$1"
+    local pid="$2"
     local delay=0.1
     local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-    while kill -0 $pid 2>/dev/null; do
+
+    while kill -0 "$pid" 2>/dev/null; do
         for i in $(seq 0 9); do
-            printf "\r\033[96m${spin:$i:1} $1...\033[0m"
+            printf "\r\033[96m${spin:$i:1} $msg...\033[0m"
             sleep $delay
         done
     done
-    printf "\r\033[92m✔ $1 завершено\033[0m\n"
+
+    printf "\r\033[92m✔ $msg завершено\033[0m\n"
 }
 
 # ============================================
@@ -24,8 +27,11 @@ spinner() {
 run() {
     echo -e "\n\033[94m[RUN]\033[0m $1"
     echo -e "\033[90m→ $2\033[0m"
+
     bash -c "$2" &
-    spinner "$1"
+    local pid=$!
+    spinner "$1" "$pid"
+    wait "$pid"
 }
 
 # ============================================
