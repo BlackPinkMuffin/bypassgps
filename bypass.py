@@ -1,8 +1,6 @@
 import time
 import math
 import threading
-import serial
-import pynmea2
 import obd
 import smbus
 from flask import Flask, jsonify, Response
@@ -11,16 +9,14 @@ from flask import Flask, jsonify, Response
 #   НАСТРОЙКИ
 # =======================================
 
-I2C_BUS = 2          # твой HMC5883L на i2c-2
+I2C_BUS = 2
 I2C_ADDR = 0x1E
 
-GPS_PORT = "/dev/ttyACM0"
-GPS_BAUDRATE = 9600
+UPDATE_INTERVAL = 0.5
 
-UPDATE_INTERVAL = 0.5  # шаг обновления (с)
-
-# Если хочешь ретранслировать СЫРОЙ GPS NMEA тоже:
-FORWARD_RAW_GPS_NMEA = True
+# Начальная точка карты (Воронеж)
+MAP_LAT = 51.685704
+MAP_LON = 39.258792
 
 # =======================================
 #   ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
@@ -29,8 +25,8 @@ FORWARD_RAW_GPS_NMEA = True
 points = []
 lock = threading.Lock()
 
-current_lat = None
-current_lon = None
+current_lat = MAP_LAT
+current_lon = MAP_LON
 current_speed_kmh = 0.0
 current_heading = 0.0
 
@@ -42,9 +38,9 @@ bus = smbus.SMBus(I2C_BUS)
 
 def init_compass():
     try:
-        bus.write_byte_data(I2C_ADDR, 0x00, 0x70)  # 8 samples @ 15Hz
-        bus.write_byte_data(I2C_ADDR, 0x01, 0x20)  # Gain = 1.3Ga
-        bus.write_byte_data(I2C_ADDR, 0x02, 0x00)  # Continuous mode
+        bus.write_byte_data(I2C_ADDR, 0x00, 0x70)
+        bus.write_byte_data(I2C_ADDR, 0x01, 0x20)
+        bus.write_byte_data(I2C_ADDR, 0x02, 0x00)
         print("Компас HMC5883L инициализирован")
     except Exception as e:
         print("Ошибка инициализации компаса:", e)
@@ -68,18 +64,17 @@ def read_heading():
         if heading_deg < 0:
             heading_deg += 360
         return heading_deg
-    except Exception as e:
-        print("Ошибка чтения компаса:", e)
+    except:
         return 0.0
 
 # =======================================
-#   OBD2 ПО BLUETOOTH
+#   OBD2
 # =======================================
 
 def connect_obd():
-    print("Подключение к OBD по Bluetooth...")
+    print("Подключение к OBD...")
     while True:
-        conn = obd.OBD(fast=False)  # авто-поиск порта
+        conn = obd.OBD(fast=False)
         if conn.is_connected():
             print("OBD подключен:", conn.port_name())
             return conn
@@ -93,94 +88,54 @@ def read_speed_kmh(conn):
     return rsp.value.to("km/h").magnitude
 
 # =======================================
-#   NMEA VTG И ЧЕКСУММА
+#   NMEA VTG
 # =======================================
 
-def nmea_checksum(sentence_body: str) -> str:
+def nmea_checksum(body):
     csum = 0
-    for c in sentence_body:
+    for c in body:
         csum ^= ord(c)
     return f"{csum:02X}"
 
-def make_vtg(heading_deg: float, speed_kmh: float) -> str:
-    knots = speed_kmh * 0.539957
-    body = f"GPVTG,{heading_deg:.1f},T,,M,{knots:.2f},N,{speed_kmh:.2f},K"
-    cs = nmea_checksum(body)
-    return f"${body}*{cs}"
+def make_vtg(heading, kmh):
+    knots = kmh * 0.539957
+    body = f"GPVTG,{heading:.1f},T,,M,{knots:.2f},N,{kmh:.2f},K"
+    return f"${body}*{nmea_checksum(body)}"
 
 # =======================================
-#   GPS (NMEA)
-# =======================================
-
-def gps_thread():
-    global current_lat, current_lon
-    while True:
-        try:
-            with serial.Serial(GPS_PORT, GPS_BAUDRATE, timeout=1) as ser:
-                print(f"GPS подключен к {GPS_PORT}")
-                while True:
-                    line = ser.readline().decode(errors="ignore").strip()
-                    if not line.startswith("$"):
-                        continue
-
-                    # По желанию: пробрасываем сырые GPS строки в stdout
-                    if FORWARD_RAW_GPS_NMEA:
-                        print(line, flush=True)
-
-                    try:
-                        msg = pynmea2.parse(line)
-                    except pynmea2.nmea.ParseError:
-                        continue
-
-                    if isinstance(msg, pynmea2.RMC) or isinstance(msg, pynmea2.GGA):
-                        if msg.latitude and msg.longitude:
-                            with lock:
-                                current_lat = msg.latitude
-                                current_lon = msg.longitude
-        except Exception as e:
-            print("Ошибка GPS:", e)
-            print("Повторное подключение к GPS через 5 секунд...")
-            time.sleep(5)
-
-# =======================================
-#   СБОР ДАННЫХ (OBD + КОМПАС + GPS + NMEA)
+#   СБОР ДАННЫХ
 # =======================================
 
 def data_collector():
-    global current_speed_kmh, current_heading
+    global current_speed_kmh, current_heading, current_lat, current_lon
 
     init_compass()
     conn = connect_obd()
 
     while True:
-        # Скорость
         kmh = read_speed_kmh(conn)
         if kmh is None:
             kmh = 0.0
 
-        # Курс
         heading = read_heading()
 
-        # Координаты
+        # Выводим NMEA VTG
+        print(make_vtg(heading, kmh), flush=True)
+
+        # Добавляем точку (движение имитируем по курсу)
+        current_lat += math.cos(math.radians(heading)) * (kmh / 360000.0)
+        current_lon += math.sin(math.radians(heading)) * (kmh / 360000.0)
+
+        point = {
+            "lat": current_lat,
+            "lon": current_lon,
+            "speed": kmh,
+            "heading": heading,
+            "timestamp": time.time()
+        }
+
         with lock:
-            lat = current_lat
-            lon = current_lon
-
-        # Формируем и выводим VTG (это и есть твой bypassgps NMEA-выход)
-        vtg_sentence = make_vtg(heading, kmh)
-        print(vtg_sentence, flush=True)
-
-        # Для карты — добавляем точку, если есть координаты
-        if lat is not None and lon is not None:
-            point = {
-                "lat": lat,
-                "lon": lon,
-                "speed": kmh,
-                "heading": heading,
-                "timestamp": time.time()
-            }
-            with lock:
-                points.append(point)
+            points.append(point)
 
         current_speed_kmh = kmh
         current_heading = heading
@@ -195,7 +150,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def index():
-    html = """
+    html = f"""
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -203,12 +158,12 @@ def index():
 <title>BypassGPS трек</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
-  html, body, #map { height: 100%; margin: 0; padding: 0; }
-  #info {
+  html, body, #map {{ height: 100%; margin: 0; padding: 0; }}
+  #info {{
     position: absolute; top: 10px; left: 10px;
     background: rgba(255,255,255,0.9); padding: 8px; border-radius: 4px;
     font-family: sans-serif; font-size: 13px;
-  }
+  }}
 </style>
 </head>
 <body>
@@ -219,50 +174,44 @@ def index():
 </div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-  var map = L.map('map').setView([55.75, 37.61], 12);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  var map = L.map('map').setView([{MAP_LAT}, {MAP_LON}], 15);
+
+  L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
     maxZoom: 19
-  }).addTo(map);
+  }}).addTo(map);
 
   var trackLayers = [];
-  window._centered = false;
 
-  function speedColor(speed) {
+  function speedColor(speed) {{
     if (speed < 20) return 'red';
     if (speed < 40) return 'yellow';
     if (speed < 60) return 'green';
     if (speed < 80) return 'blue';
     return 'purple';
-  }
+  }}
 
-  function updateData() {
+  function updateData() {{
     fetch('/data')
       .then(r => r.json())
-      .then(data => {
+      .then(data => {{
         trackLayers.forEach(l => map.removeLayer(l));
         trackLayers = [];
 
-        if (data.points.length > 1) {
-          for (let i = 0; i < data.points.length - 1; i++) {
+        if (data.points.length > 1) {{
+          for (let i = 0; i < data.points.length - 1; i++) {{
             let p1 = data.points[i];
             let p2 = data.points[i+1];
             let color = speedColor(p2.speed);
-            let line = L.polyline([[p1.lat, p1.lon], [p2.lat, p2.lon]], {color: color, weight: 4});
+            let line = L.polyline([[p1.lat, p1.lon], [p2.lat, p2.lon]], {{color: color, weight: 4}});
             line.addTo(map);
             trackLayers.push(line);
-          }
-          if (!window._centered) {
-            let last = data.points[data.points.length - 1];
-            map.setView([last.lat, last.lon], 15);
-            window._centered = true;
-          }
-        }
+          }}
+        }}
 
         document.getElementById('speed').textContent = data.current_speed.toFixed(1);
         document.getElementById('heading').textContent = data.current_heading.toFixed(1);
-      })
-      .catch(err => console.error(err));
-  }
+      }});
+  }}
 
   setInterval(updateData, 1000);
 </script>
@@ -286,13 +235,10 @@ def get_data():
 # =======================================
 
 def main():
-    t_gps = threading.Thread(target=gps_thread, daemon=True)
-    t_gps.start()
-
     t_data = threading.Thread(target=data_collector, daemon=True)
     t_data.start()
 
-    print("Запуск веб-сервера на http://0.0.0.0:5000")
+    print("Веб-сервер: http://0.0.0.0:5000")
     app.run(host="0.0.0.0", port=5000, debug=False)
 
 if __name__ == "__main__":
